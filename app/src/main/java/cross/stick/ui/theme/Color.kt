@@ -2,9 +2,13 @@ package cross.stick.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val Blue600 = Color(0xFF1E88E5)
-val Blue400 = Color(0xFF42A5F5)
-val Blue800 = Color(0xFF1565C0)
-val Slate50 = Color(0xFFF8FAFC)
-val Slate900 = Color(0xFF0F172A)
-val PinkAccent = Color(0xFFFF4081)
+val Primary          = Color(0xFF6750A4)
+val OnPrimary        = Color(0xFFFFFFFF)
+val PrimaryContainer = Color(0xFFEADDFF)
+val Secondary        = Color(0xFF625B71)
+val Tertiary         = Color(0xFF7D5260)
+val Background       = Color(0xFFFFFBFE)
+val Surface          = Color(0xFFFFFBFE)
+val SurfaceVariant   = Color(0xFFE7E0EC)
+val Outline          = Color(0xFF79747E)
+val ErrorColor       = Color(0xFFB3261E)

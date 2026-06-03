@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Link
@@ -46,78 +47,72 @@ fun HomeScreen(
         Spacer(modifier = Modifier.height(64.dp))
 
         Text(
-            text = "Transfer",
+            text = "CrossStick",
             style = MaterialTheme.typography.displaySmall,
-            fontWeight = FontWeight.Bold
-        )
-        Text(
-            text = "Stickers",
-            style = MaterialTheme.typography.displaySmall,
-            fontWeight = FontWeight.Bold,
+            fontWeight = FontWeight.ExtraBold,
             color = MaterialTheme.colorScheme.primary
         )
-
         Text(
-            text = "Paste a Telegram sticker pack link",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 8.dp, bottom = 32.dp)
-        )
-
-        OutlinedTextField(
-            value = link,
-            onValueChange = { link = it },
-            label = { Text("Sticker pack link") },
-            placeholder = { Text("https://t.me/addstickers/PackName") },
-            leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-            singleLine = true,
-            enabled = !isProcessing,
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.large
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Button(
-            onClick = { onFetchPack(link) },
-            enabled = link.isNotBlank() && !isProcessing,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(54.dp),
-            shape = MaterialTheme.shapes.large
-        ) {
-            Icon(Icons.Default.Search, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Fetch Stickers")
-        }
-
-        Spacer(modifier = Modifier.height(32.dp))
-        HorizontalDivider()
-        Spacer(modifier = Modifier.height(32.dp))
-
-        Text(
-            text = "From WhatsApp",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold
-        )
-        Text(
-            text = "Select WebP stickers to import to Telegram",
-            style = MaterialTheme.typography.bodyMedium,
+            text = "Transfer Stickers",
+            style = MaterialTheme.typography.headlineSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(48.dp))
 
-        OutlinedButton(
-            onClick = { importLauncher.launch("image/webp") },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(54.dp),
-            enabled = !isProcessing,
-            shape = MaterialTheme.shapes.large
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
         ) {
-            Text("Import to Telegram")
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("Telegram → WhatsApp", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = link,
+                    onValueChange = { link = it },
+                    label = { Text("Sticker pack link") },
+                    placeholder = { Text("https://t.me/addstickers/PackName") },
+                    leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                    singleLine = true,
+                    enabled = !isProcessing,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = { onFetchPack(link) },
+                    enabled = link.isNotBlank() && !isProcessing,
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Search, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Fetch Stickers")
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("WhatsApp → Telegram", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { importLauncher.launch("image/webp") },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    enabled = !isProcessing,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Import to Telegram")
+                }
+            }
         }
     }
 }

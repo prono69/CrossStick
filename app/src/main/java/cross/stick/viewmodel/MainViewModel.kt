@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cross.stick.conversion.ConversionEngine
@@ -156,7 +157,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _phase.value = ImportPhase.Done
         _convertedPackId.value = packId
         loadSavedPacks()
-        addToWhatsApp(packId)
+
+        // Only add if enough stickers
+        if (files.size >= 3) {
+            addToWhatsApp(packId)
+        } else {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(getApplication(), "Need at least 3 stickers for WhatsApp", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     fun addToWhatsApp(packId: String) {
@@ -179,15 +188,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val intent = Intent("org.telegram.messenger.CREATE_STICKER_PACK").apply {
                 putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
                 putStringArrayListExtra("STICKER_EMOJIS", ArrayList(emojis))
-                type = "image/webp"
+                type = "image/*"
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             if (intent.resolveActivity(context.packageManager) != null) {
                 context.startActivity(intent)
+                Toast.makeText(context, "Opening Telegram...", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Telegram is not installed or doesn't support sticker import", Toast.LENGTH_LONG).show()
             }
         } catch (e: Exception) {
             Log.e("CrossStick", "Telegram import failed", e)
+            Toast.makeText(context, "Failed to open Telegram: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 }
