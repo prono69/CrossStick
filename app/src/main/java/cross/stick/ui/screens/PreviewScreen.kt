@@ -92,7 +92,7 @@ fun PreviewScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "${stickers.size}/30 stickers selected. WhatsApp requires 3–30 static stickers.",
+                    text = "${stickers.size}/60 stickers selected. WhatsApp requires 3–60 static stickers.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
