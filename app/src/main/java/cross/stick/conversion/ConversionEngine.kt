@@ -9,6 +9,8 @@ import java.io.FileOutputStream
 
 object ConversionEngine {
 
+    private const val MAX_STATIC_STICKER_BYTES = 100 * 1024
+
     fun convertToWhatsAppStatic(
         inputFile: File,
         outputDir: File,
@@ -20,81 +22,34 @@ object ConversionEngine {
 
             val scaledBitmap = scaleTo512Transparent(bitmap)
             val outFile = File(outputDir, outputName)
-            writeWebp(scaledBitmap, outFile)
+            val success = writeWebp(scaledBitmap, outFile)
 
             scaledBitmap.recycle()
             bitmap.recycle()
 
-            if (outFile.exists() && outFile.length() > 0) {
+            if (success && validateStaticSticker(outFile)) {
                 Result.success(outFile)
             } else {
-                Result.failure(Exception("Output file empty"))
+                outFile.delete()
+                Result.failure(Exception("Sticker validation failed"))
             }
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
+    fun validateStaticSticker(file: File): Boolean {
+        if (!file.exists() || file.length() !in 1..MAX_STATIC_STICKER_BYTES) return false
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, opts)
+        return opts.outWidth == 512 && opts.outHeight == 512
+    }
+
     private fun scaleTo512Transparent(original: Bitmap): Bitmap {
         val size = 512
         val result = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(result)
-        val ratio = minOf(
-            size.toFloat() / original.width,
-            size.toFloat() / original.height
-        )
-        val newW = (original.width * ratio).toInt()
-        val newH = (original.height * ratio).toInt()
-        val scaled = Bitmap.createScaledBitmap(original, newW, newH, true)
-        val left = (size - newW) / 2
-        val top = (size - newH) / 2
-        canvas.drawBitmap(scaled, left.toFloat(), top.toFloat(), null)
-        scaled.recycle()
-        return result
-    }
-
-    private fun writeWebp(bitmap: Bitmap, output: File) {
-        val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Bitmap.CompressFormat.WEBP_LOSSY
-        } else {
-            @Suppress("DEPRECATION")
-            Bitmap.CompressFormat.WEBP
-        }
-        var quality = 80
-        do {
-            FileOutputStream(output).use { fos ->
-                bitmap.compress(format, quality, fos)
-            }
-            quality -= 10
-        } while (output.length() > 100 * 1024 && quality >= 30)
-    }
-
-    fun createTrayFromFile(inputFile: File, outputDir: File): File {
-        val bitmap = BitmapFactory.decodeFile(inputFile.absolutePath)
-            ?: throw IllegalArgumentException("Cannot decode tray source")
-        val tray = scaleToTransparent(bitmap, 96)
-        val trayFile = File(outputDir, "tray.png")
-
-        var quality = 100
-        do {
-            FileOutputStream(trayFile).use { fos ->
-                tray.compress(Bitmap.CompressFormat.PNG, quality, fos)
-            }
-            quality -= 10
-        } while (trayFile.length() > 50 * 1024 && quality >= 70)
-
-        tray.recycle()
-        bitmap.recycle()
-        return trayFile
-    }
-
-    private fun scaleToTransparent(original: Bitmap, size: Int): Bitmap {
-        val result = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(result)
-        val ratio = minOf(
-            size.toFloat() / original.width,
-            size.toFloat() / original.height
-        )
+        val ratio = minOf(size.toFloat() / original.width, size.toFloat() / original.height)
         val newW = (original.width * ratio).toInt().coerceAtLeast(1)
         val newH = (original.height * ratio).toInt().coerceAtLeast(1)
         val scaled = Bitmap.createScaledBitmap(original, newW, newH, true)
@@ -103,5 +58,54 @@ object ConversionEngine {
         canvas.drawBitmap(scaled, left.toFloat(), top.toFloat(), null)
         scaled.recycle()
         return result
+    }
+
+    private fun writeWebp(bitmap: Bitmap, output: File): Boolean {
+        val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Bitmap.CompressFormat.WEBP_LOSSY
+        } else {
+            @Suppress("DEPRECATION") Bitmap.CompressFormat.WEBP
+        }
+        var quality = 80
+        while (quality >= 10) {
+            FileOutputStream(output).use { fos -> bitmap.compress(format, quality, fos) }
+            if (output.length() in 1..MAX_STATIC_STICKER_BYTES) return true
+            quality -= 10
+        }
+        output.delete()
+        return false
+    }
+
+    fun createTrayFromFile(inputFile: File, outputDir: File): Result<File> {
+        return try {
+            val bitmap = BitmapFactory.decodeFile(inputFile.absolutePath)
+                ?: return Result.failure(Exception("Cannot decode tray source"))
+            val tray = Bitmap.createScaledBitmap(bitmap, 96, 96, true)
+            val trayFile = File(outputDir, "tray.png")
+            if (!tryWriteTrayPng(tray, trayFile)) {
+                tray.recycle()
+                bitmap.recycle()
+                return Result.failure(Exception("Tray too large"))
+            }
+            tray.recycle()
+            bitmap.recycle()
+            Result.success(trayFile)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun tryWriteTrayPng(tray: Bitmap, output: File): Boolean {
+        FileOutputStream(output).use { fos -> tray.compress(Bitmap.CompressFormat.PNG, 100, fos) }
+        if (output.length() in 1..(50 * 1024)) return true
+        output.delete()
+        return false
+    }
+
+    fun validateTray(file: File): Boolean {
+        if (!file.exists() || file.length() !in 1..(50 * 1024)) return false
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, opts)
+        return opts.outWidth == 96 && opts.outHeight == 96
     }
 }

@@ -10,10 +10,12 @@ import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cross.stick.conversion.ConversionEngine
+import cross.stick.data.local.PackStorage
 import cross.stick.data.local.PreferencesManager
+import cross.stick.data.local.Sticker
+import cross.stick.data.local.StickerPack
 import cross.stick.data.model.TelegramStickerSet
 import cross.stick.data.repository.StickerRepository
-import cross.stick.whatsapp.WhatsAppIntentHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -31,17 +33,8 @@ private const val TELEGRAM_CREATE_STICKER_PACK_ACTION = "org.telegram.messenger.
 private const val TELEGRAM_STICKER_EMOJIS_EXTRA = "STICKER_EMOJIS"
 private const val TELEGRAM_IMPORTER_EXTRA = "IMPORTER"
 
-data class SavedPack(
-    val id: String,
-    val name: String,
-    val stickerCount: Int,
-    val path: File
-)
-
-data class PreviewSticker(
-    val file: File,
-    val emoji: String = "😀"
-)
+data class SavedPack(val id: String, val name: String, val stickerCount: Int, val path: File)
+data class PreviewSticker(val file: File, val emoji: String = "😀")
 
 sealed class ImportPhase {
     object Idle : ImportPhase()
@@ -49,7 +42,7 @@ sealed class ImportPhase {
     data class Downloading(val current: Int, val total: Int) : ImportPhase()
     object PreviewReady : ImportPhase()
     data class Converting(val current: Int, val total: Int) : ImportPhase()
-    object Done : ImportPhase()
+    data class Done(val packId: String) : ImportPhase()
     data class Failed(val error: String) : ImportPhase()
 }
 
@@ -57,6 +50,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefs = PreferencesManager(application)
     private val repository = StickerRepository(application)
+    private val packStorage = PackStorage(application)
 
     val botToken: StateFlow<String> = prefs.botToken.stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val authorName: StateFlow<String> = prefs.authorName.stateIn(viewModelScope, SharingStarted.Eagerly, "")
@@ -71,39 +65,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentPackId = MutableStateFlow<String?>(null)
     val currentPackId: StateFlow<String?> = _currentPackId.asStateFlow()
 
-    private val _convertedPackId = MutableStateFlow<String?>(null)
-    val convertedPackId: StateFlow<String?> = _convertedPackId.asStateFlow()
-
     private val _previewStickers = MutableStateFlow<List<PreviewSticker>>(emptyList())
     val previewStickers: StateFlow<List<PreviewSticker>> = _previewStickers.asStateFlow()
-
-    private val _downloadedFiles = MutableStateFlow<List<File>>(emptyList())
-    val downloadedFilePaths: List<File> get() = _downloadedFiles.value
 
     private val _savedPacks = MutableStateFlow<List<SavedPack>>(emptyList())
     val savedPacks: StateFlow<List<SavedPack>> = _savedPacks.asStateFlow()
 
+    private var lastStickerSetTitle: String? = null
+
     init {
-        viewModelScope.launch {
-            onboardingComplete.collect { _isReady.value = true }
-        }
+        viewModelScope.launch { onboardingComplete.collect { _isReady.value = true } }
         loadSavedPacks()
     }
 
     private fun loadSavedPacks() {
-        val context = getApplication<Application>()
-        val packsDir = File(context.filesDir, "stickers/converted")
-        if (!packsDir.exists()) {
-            _savedPacks.value = emptyList()
-            return
+        val packs = packStorage.loadPacks()
+        _savedPacks.value = packs.map { pack ->
+            SavedPack(
+                id = pack.identifier,
+                name = pack.name,
+                stickerCount = pack.stickers.size,
+                path = File(getApplication<Application>().filesDir, "stickers/converted/${pack.identifier}")
+            )
         }
-        _savedPacks.value = packsDir.listFiles()
-            ?.filter { it.isDirectory }
-            ?.sortedByDescending { it.lastModified() }
-            ?.mapNotNull { packDir ->
-                val stickerCount = packDir.listFiles { f -> f.extension.equals("webp", ignoreCase = true) }?.size ?: 0
-                if (stickerCount == 0) null else SavedPack(id = packDir.name, name = packDir.name, stickerCount = stickerCount, path = packDir)
-            } ?: emptyList()
     }
 
     fun completeOnboarding(token: String, author: String) {
@@ -118,6 +102,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             prefs.saveBotToken(token)
             prefs.saveAuthorName(author)
+            loadSavedPacks()
         }
     }
 
@@ -125,59 +110,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _phase.value = ImportPhase.Fetching
             _previewStickers.value = emptyList()
-            _downloadedFiles.value = emptyList()
-            _convertedPackId.value = null
-
             val packName = repository.extractPackName(link)
             val result = repository.fetchStickerSet(packName)
             result.fold(
                 onSuccess = { stickerSet ->
-                    val packId = stickerSet.name.sanitizePackId()
-                    _currentPackId.value = packId
-                    downloadForPreview(stickerSet, packId)
+                    lastStickerSetTitle = stickerSet.title
+                    _currentPackId.value = stickerSet.name.sanitizePackId()
+                    downloadForPreview(stickerSet, _currentPackId.value!!)
                 },
-                onFailure = { e ->
-                    _phase.value = ImportPhase.Failed(e.message ?: "Could not fetch stickers")
-                }
+                onFailure = { e -> _phase.value = ImportPhase.Failed(e.message ?: "Could not fetch stickers") }
             )
         }
     }
 
     private suspend fun downloadForPreview(stickerSet: TelegramStickerSet, packId: String) {
-        val staticStickers = stickerSet.stickers
-            .filterNot { it.is_animated || it.is_video }
-            .take(MAX_WHATSAPP_STICKERS)
-
+        val staticStickers = stickerSet.stickers.filterNot { it.is_animated || it.is_video }.take(MAX_WHATSAPP_STICKERS)
         if (staticStickers.size < MIN_WHATSAPP_STICKERS) {
-            _phase.value = ImportPhase.Failed("This pack has fewer than 3 static stickers. WhatsApp requires at least 3 static stickers.")
+            _phase.value = ImportPhase.Failed("This pack has fewer than 3 static stickers.")
             return
         }
-
         val files = mutableListOf<PreviewSticker>()
         val rawDir = File(getApplication<Application>().filesDir, "stickers/raw/$packId")
         if (rawDir.exists()) rawDir.deleteRecursively()
         rawDir.mkdirs()
-
         staticStickers.forEachIndexed { index, sticker ->
             _phase.value = ImportPhase.Downloading(index + 1, staticStickers.size)
             repository.downloadSticker(sticker.file_id, packId, index).fold(
-                onSuccess = { file ->
-                    files.add(PreviewSticker(file = file, emoji = sticker.emoji?.takeIf { it.isNotBlank() } ?: "😀"))
-                },
-                onFailure = { e ->
-                    Log.e("CrossStick", "Failed sticker $index: ${e.message}")
-                }
+                onSuccess = { file -> files.add(PreviewSticker(file = file, emoji = sticker.emoji?.takeIf { it.isNotBlank() } ?: "😀")) },
+                onFailure = { Log.e("CrossStick", "Failed sticker $index: ${it.message}") }
             )
         }
-
-        _downloadedFiles.value = files.map { it.file }
         _previewStickers.value = files
-
-        _phase.value = if (files.size >= MIN_WHATSAPP_STICKERS) {
-            ImportPhase.PreviewReady
-        } else {
-            ImportPhase.Failed("Only ${files.size} stickers could be downloaded. WhatsApp needs at least 3 stickers.")
-        }
+        _phase.value = if (files.size >= MIN_WHATSAPP_STICKERS) ImportPhase.PreviewReady
+        else ImportPhase.Failed("Only ${files.size} stickers downloaded.")
     }
 
     fun removePreviewSticker(index: Int) {
@@ -212,10 +177,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 FileOutputStream(outFile).use { output -> input.copyTo(output) }
             } ?: return null
             PreviewSticker(outFile, "😀")
-        } catch (e: Exception) {
-            Log.e("CrossStick", "Could not copy selected sticker", e)
-            null
-        }
+        } catch (e: Exception) { Log.e("CrossStick", "Could not copy selected sticker", e); null }
     }
 
     fun convertPreviewToWhatsApp() {
@@ -226,67 +188,108 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _phase.value = ImportPhase.Failed("Select at least 3 stickers before converting.")
                 return@launch
             }
-
             val outputDir = File(getApplication<Application>().filesDir, "stickers/converted/$packId")
             withContext(Dispatchers.IO) {
                 if (outputDir.exists()) outputDir.deleteRecursively()
                 outputDir.mkdirs()
             }
 
-            val converted = mutableListOf<File>()
-            selected.forEachIndexed { index, previewSticker ->
+            val validStickers = mutableListOf<Sticker>()
+            selected.forEachIndexed { index, ps ->
                 _phase.value = ImportPhase.Converting(index + 1, selected.size)
                 val result = withContext(Dispatchers.Default) {
                     ConversionEngine.convertToWhatsAppStatic(
-                        inputFile = previewSticker.file,
+                        inputFile = ps.file,
                         outputDir = outputDir,
                         outputName = "sticker_${index.toString().padStart(2, '0')}.webp"
                     )
                 }
                 result.fold(
-                    onSuccess = { converted.add(it) },
-                    onFailure = { e -> Log.e("CrossStick", "Conversion failed for sticker $index: ${e.message}") }
+                    onSuccess = { file ->
+                        validStickers.add(Sticker(
+                            imageFileName = file.name,
+                            emojis = listOf(ps.emoji.ifBlank { "😀" }),
+                            accessibilityText = "Sticker ${index + 1}",
+                            rawFilePath = ps.file.absolutePath,
+                            convertedFilePath = file.absolutePath
+                        ))
+                    },
+                    onFailure = { Log.e("CrossStick", "Conversion failed for sticker $index: ${it.message}") }
                 )
             }
 
-            if (converted.size < MIN_WHATSAPP_STICKERS) {
-                _phase.value = ImportPhase.Failed("Only ${converted.size} stickers could be converted. WhatsApp needs at least 3 valid stickers.")
+            if (validStickers.size < MIN_WHATSAPP_STICKERS) {
+                _phase.value = ImportPhase.Failed("Only ${validStickers.size} valid stickers were created. WhatsApp requires at least 3.")
                 return@launch
             }
 
-            withContext(Dispatchers.Default) {
-                ConversionEngine.createTrayFromFile(converted.first(), outputDir)
+            val trayResult = withContext(Dispatchers.Default) {
+                ConversionEngine.createTrayFromFile(File(validStickers.first().rawFilePath), outputDir)
             }
 
-            _phase.value = ImportPhase.Done
-            _convertedPackId.value = packId
+            if (trayResult.isFailure || !ConversionEngine.validateTray(File(outputDir, "tray.png"))) {
+                _phase.value = ImportPhase.Failed("Tray icon could not be generated under 50 KB.")
+                return@launch
+            }
+
+            val pack = StickerPack(
+                identifier = packId,
+                name = lastStickerSetTitle?.take(128) ?: packId.take(128),
+                publisher = authorName.value.ifBlank { "CrossStick User" }.take(128),
+                trayImageFile = "tray.png",
+                stickers = validStickers.take(MAX_WHATSAPP_STICKERS),
+                imageDataVersion = System.currentTimeMillis().toString(),
+                animatedStickerPack = false
+            )
+
+            packStorage.savePack(pack)
+            _phase.value = ImportPhase.Done(packId)
             _previewStickers.value = emptyList()
             loadSavedPacks()
-            addToWhatsApp(packId)
         }
     }
 
-    fun addToWhatsApp(packId: String) {
-        val context = getApplication<Application>()
-        WhatsAppIntentHelper.addStickerPackToWhatsApp(
-            context = context,
-            packId = packId,
-            packName = packId,
-            authority = "cross.stick.stickercontentprovider"
-        )
+    fun getWhatsAppIntent(packId: String): Intent {
+        return Intent("com.whatsapp.intent.action.ENABLE_STICKER_PACK").apply {
+            putExtra("sticker_pack_id", packId)
+            putExtra("sticker_pack_authority", "cross.stick.stickercontentprovider")
+            putExtra("sticker_pack_name", packId.take(128))
+            setPackage("com.whatsapp")
+        }
     }
 
-    fun resetPhase() {
-        _phase.value = ImportPhase.Idle
+    fun validatePackForWhatsApp(packId: String): List<String> {
+        val errors = mutableListOf<String>()
+        val resolver = getApplication<Application>().contentResolver
+        val authority = "cross.stick.stickercontentprovider"
+        resolver.query(Uri.parse("content://$authority/metadata/$packId"), null, null, null, null).use { c ->
+            if (c == null || !c.moveToFirst()) errors += "Provider metadata row missing for $packId"
+        }
+        resolver.query(Uri.parse("content://$authority/stickers/$packId"), arrayOf("sticker_file_name"), null, null, null).use { c ->
+            if (c == null) errors += "Provider stickers cursor is null"
+            else {
+                val names = mutableListOf<String>()
+                val col = c.getColumnIndexOrThrow("sticker_file_name")
+                while (c.moveToNext()) names += c.getString(col)
+                if (names.size !in 3..30) errors += "Sticker count must be 3..30, got ${names.size}"
+                names.forEach { name ->
+                    try {
+                        resolver.openAssetFileDescriptor(Uri.parse("content://$authority/stickers_asset/$packId/$name"), "r")?.close()
+                    } catch (e: Exception) { errors += "Sticker $name cannot be opened: ${e.message}" }
+                }
+            }
+        }
+        try {
+            resolver.openAssetFileDescriptor(Uri.parse("content://$authority/stickers_asset/$packId/tray.png"), "r")?.close()
+        } catch (e: Exception) { errors += "Tray cannot be opened: ${e.message}" }
+        return errors
     }
+
+    fun resetPhase() { _phase.value = ImportPhase.Idle }
 
     fun importToTelegram(uris: List<Uri>, emojis: List<String>) {
         val context = getApplication<Application>()
-        if (uris.isEmpty()) {
-            Toast.makeText(context, "Select at least one WebP sticker", Toast.LENGTH_SHORT).show()
-            return
-        }
-
+        if (uris.isEmpty()) { Toast.makeText(context, "Select at least one WebP sticker", Toast.LENGTH_SHORT).show(); return }
         val normalizedEmojis = if (emojis.size == uris.size) emojis else List(uris.size) { "😀" }
         val baseIntent = Intent(TELEGRAM_CREATE_STICKER_PACK_ACTION).apply {
             putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
@@ -296,47 +299,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-
         try {
-            val handlers = context.packageManager.queryIntentActivities(
-                baseIntent,
-                PackageManager.MATCH_DEFAULT_ONLY
-            )
-
-            handlers.forEach { resolveInfo ->
-                uris.forEach { uri ->
-                    context.grantUriPermission(
-                        resolveInfo.activityInfo.packageName,
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    )
-                }
-            }
-
-            val targetPackage = handlers
-                .map { it.activityInfo.packageName }
-                .firstOrNull { it == "org.telegram.messenger" }
-                ?: handlers.firstOrNull()?.activityInfo?.packageName
-
-            val launchIntent = Intent(baseIntent).apply {
-                targetPackage?.let { setPackage(it) }
-            }
-
+            val handlers = context.packageManager.queryIntentActivities(baseIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            handlers.forEach { ri -> uris.forEach { uri -> context.grantUriPermission(ri.activityInfo.packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
+            val targetPackage = handlers.map { it.activityInfo.packageName }.firstOrNull { it == "org.telegram.messenger" } ?: handlers.firstOrNull()?.activityInfo?.packageName
+            val launchIntent = Intent(baseIntent).apply { targetPackage?.let { setPackage(it) } }
             context.startActivity(launchIntent)
             Toast.makeText(context, "Opening Telegram...", Toast.LENGTH_SHORT).show()
         } catch (e: ActivityNotFoundException) {
-            Log.e("CrossStick", "Telegram import activity not found", e)
             Toast.makeText(context, "Telegram is not installed or does not support sticker import.", Toast.LENGTH_LONG).show()
-        } catch (e: Exception) {
-            Log.e("CrossStick", "Telegram import failed", e)
-            Toast.makeText(context, "Failed to open Telegram: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
+        } catch (e: Exception) { Toast.makeText(context, "Failed to open Telegram: ${e.message}", Toast.LENGTH_SHORT).show() }
     }
 
     private fun String.sanitizePackId(): String {
-        return replace(Regex("[^A-Za-z0-9_. -]"), "_")
-            .trim()
-            .ifBlank { "pack_${System.currentTimeMillis()}" }
-            .take(120)
+        return replace(Regex("[^A-Za-z0-9_. -]"), "_").trim().ifBlank { "pack_${System.currentTimeMillis()}" }.take(120)
     }
 }
