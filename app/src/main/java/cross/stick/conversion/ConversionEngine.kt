@@ -10,6 +10,8 @@ import com.arthenica.ffmpegkit.ReturnCode
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.GZIPInputStream
+import com.airbnb.lottie.LottieCompositionFactory
+import com.airbnb.lottie.LottieDrawable
 
 object ConversionEngine {
 
@@ -261,9 +263,8 @@ object ConversionEngine {
      */
     private fun renderLottieFrames(lottieJson: String, framesDir: File): Int {
         return try {
-            val composition = com.airbnb.lottie.LottieComposition.Factory
-                .fromJsonSync(android.content.res.Resources.getSystem(), lottieJson)
-                ?: return 0
+            val result = com.airbnb.lottie.LottieCompositionFactory.fromJsonStringSync(lottieJson, null)
+            val composition = result.value ?: return 0
 
             val drawable = com.airbnb.lottie.LottieDrawable().apply {
                 setComposition(composition)
