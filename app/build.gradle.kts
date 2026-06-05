@@ -67,7 +67,7 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("io.coil-kt:coil-gif:2.7.0")
     
-    implementation("com.arthenica:ffmpeg-kit-android:6.0-2.LTS")
+    implementation("io.github.nikita36078:ffmpeg-kit:6.0.LTS")
     implementation("com.airbnb.android:lottie:6.4.0")
 
     implementation("com.google.crypto.tink:tink-android:1.13.0")
