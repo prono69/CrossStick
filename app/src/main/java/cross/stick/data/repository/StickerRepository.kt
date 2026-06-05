@@ -2,8 +2,10 @@ package cross.stick.data.repository
 
 import android.content.Context
 import android.util.Log
+import cross.stick.conversion.ConversionEngine
 import cross.stick.data.local.PreferencesManager
 import cross.stick.data.model.TelegramResponse
+import cross.stick.data.model.TelegramSticker
 import cross.stick.data.model.TelegramStickerSet
 import cross.stick.data.remote.RetrofitClient
 import kotlinx.coroutines.Dispatchers
@@ -67,6 +69,58 @@ class StickerRepository(context: Context) {
                 Result.failure(Exception(e.toUserMessage()))
             }
         }
+
+    /**
+     * Downloads and converts a sticker to WhatsApp-compatible WebP format.
+     * Automatically handles static (.webp), animated (.tgs), and video (.webm) stickers.
+     *
+     * @param sticker    The TelegramSticker object (contains type flags)
+     * @param packId     Unique ID for the sticker pack (used for directory naming)
+     * @param index      Index of the sticker in the pack
+     * @param outputDir  Directory where the converted .webp should be saved
+     * @return           Result with the converted File on success
+     */
+    suspend fun downloadAndConvertSticker(
+        sticker: TelegramSticker,
+        packId: String,
+        index: Int,
+        outputDir: File
+    ): Result<File> = withContext(Dispatchers.IO) {
+        // Step 1: Download raw file from Telegram
+        val downloadResult = downloadSticker(sticker.file_id, packId, index)
+        if (downloadResult.isFailure) return@withContext downloadResult
+
+        val rawFile = downloadResult.getOrThrow()
+        val outputName = "sticker_$index.webp"
+        val tempDir = File(filesDir, "stickers/temp/$packId")
+        if (!tempDir.exists()) tempDir.mkdirs()
+        if (!outputDir.exists()) outputDir.mkdirs()
+
+        // Step 2: Convert based on sticker type
+        val conversionResult = when {
+            sticker.is_video -> {
+                // .webm VP9 video sticker → animated WebP
+                Log.d("CrossStick", "Converting video sticker $index (.webm → animated .webp)")
+                ConversionEngine.convertToWhatsAppVideo(rawFile, outputDir, outputName)
+            }
+            sticker.is_animated -> {
+                // .tgs Lottie sticker → animated WebP
+                Log.d("CrossStick", "Converting animated sticker $index (.tgs → animated .webp)")
+                ConversionEngine.convertToWhatsAppAnimated(rawFile, outputDir, outputName, tempDir)
+            }
+            else -> {
+                // .webp static sticker → scaled/validated WebP
+                Log.d("CrossStick", "Converting static sticker $index (.webp → .webp)")
+                ConversionEngine.convertToWhatsAppStatic(rawFile, outputDir, outputName)
+            }
+        }
+
+        // Cleanup raw file after conversion
+        rawFile.delete()
+        tempDir.deleteRecursively()
+
+        conversionResult
+    }
 
     fun extractPackName(input: String): String {
         return input

@@ -14,6 +14,10 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
     }
 
     buildTypes {
@@ -62,6 +66,9 @@ dependencies {
 
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("io.coil-kt:coil-gif:2.7.0")
+    
+    implementation("com.arthenica:ffmpeg-kit-android:6.0-2.LTS")
+    implementation("com.airbnb.android:lottie:6.4.0")
 
     implementation("com.google.crypto.tink:tink-android:1.13.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")

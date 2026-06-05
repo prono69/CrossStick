@@ -74,6 +74,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val savedPacks: StateFlow<List<SavedPack>> = _savedPacks.asStateFlow()
 
     private var lastStickerSetTitle: String? = null
+    // Tracks which preview stickers are animated/video so convertPreviewToWhatsApp knows
+    private var previewStickerTypes = mapOf<String, Pair<Boolean, Boolean>>() // filePath → (is_animated, is_video)
 
     init {
         viewModelScope.launch { onboardingComplete.collect { _isReady.value = true } }
@@ -112,6 +114,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _phase.value = ImportPhase.Fetching
             _previewStickers.value = emptyList()
+            previewStickerTypes = emptyMap()
             val packName = repository.extractPackName(link)
             val result = repository.fetchStickerSet(packName)
             result.fold(
@@ -126,22 +129,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun downloadForPreview(stickerSet: TelegramStickerSet, packId: String) {
-        val staticStickers = stickerSet.stickers.filterNot { it.is_animated || it.is_video }.take(MAX_WHATSAPP_STICKERS)
-        if (staticStickers.size < MIN_WHATSAPP_STICKERS) {
-            _phase.value = ImportPhase.Failed("This pack has fewer than 3 static stickers.")
+        // Accept all sticker types now (static, animated, video)
+        val allStickers = stickerSet.stickers.take(MAX_WHATSAPP_STICKERS)
+        if (allStickers.size < MIN_WHATSAPP_STICKERS) {
+            _phase.value = ImportPhase.Failed("This pack has fewer than $MIN_WHATSAPP_STICKERS stickers.")
             return
         }
+
         val files = mutableListOf<PreviewSticker>()
+        val typeMap = mutableMapOf<String, Pair<Boolean, Boolean>>()
+
         val rawDir = File(getApplication<Application>().filesDir, "stickers/raw/$packId")
         if (rawDir.exists()) rawDir.deleteRecursively()
         rawDir.mkdirs()
-        staticStickers.forEachIndexed { index, sticker ->
-            _phase.value = ImportPhase.Downloading(index + 1, staticStickers.size)
+
+        allStickers.forEachIndexed { index, sticker ->
+            _phase.value = ImportPhase.Downloading(index + 1, allStickers.size)
             repository.downloadSticker(sticker.file_id, packId, index).fold(
-                onSuccess = { file -> files.add(PreviewSticker(file = file, emoji = sticker.emoji?.takeIf { it.isNotBlank() } ?: "😀")) },
+                onSuccess = { file ->
+                    val emoji = sticker.emoji?.takeIf { it.isNotBlank() } ?: "😀"
+                    files.add(PreviewSticker(file = file, emoji = emoji))
+                    // Remember type info keyed by file path for conversion step
+                    typeMap[file.absolutePath] = Pair(sticker.is_animated, sticker.is_video)
+                },
                 onFailure = { Log.e("CrossStick", "Failed sticker $index: ${it.message}") }
             )
         }
+
+        previewStickerTypes = typeMap
         _previewStickers.value = files
         _phase.value = if (files.size >= MIN_WHATSAPP_STICKERS) ImportPhase.PreviewReady
         else ImportPhase.Failed("Only ${files.size} stickers downloaded.")
@@ -187,9 +202,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val packId = _currentPackId.value ?: "pack_${System.currentTimeMillis()}"
             val selected = _previewStickers.value.take(MAX_WHATSAPP_STICKERS)
             if (selected.size < MIN_WHATSAPP_STICKERS) {
-                _phase.value = ImportPhase.Failed("Select at least 3 stickers before converting.")
+                _phase.value = ImportPhase.Failed("Select at least $MIN_WHATSAPP_STICKERS stickers before converting.")
                 return@launch
             }
+
             val outputDir = File(getApplication<Application>().filesDir, "stickers/converted/$packId")
             withContext(Dispatchers.IO) {
                 if (outputDir.exists()) outputDir.deleteRecursively()
@@ -197,15 +213,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val validStickers = mutableListOf<Sticker>()
+            var hasAnimated = false
+
             selected.forEachIndexed { index, ps ->
                 _phase.value = ImportPhase.Converting(index + 1, selected.size)
-                val result = withContext(Dispatchers.Default) {
-                    ConversionEngine.convertToWhatsAppStatic(
-                        inputFile = ps.file,
-                        outputDir = outputDir,
-                        outputName = "sticker_${index.toString().padStart(2, '0')}.webp"
-                    )
+
+                val (isAnimated, isVideo) = previewStickerTypes[ps.file.absolutePath] ?: Pair(false, false)
+                if (isAnimated || isVideo) hasAnimated = true
+
+                val outputName = "sticker_${index.toString().padStart(2, '0')}.webp"
+                val tempDir = File(getApplication<Application>().filesDir, "stickers/temp/$packId")
+
+                val result = withContext(Dispatchers.IO) {
+                    when {
+                        isVideo -> ConversionEngine.convertToWhatsAppVideo(
+                            inputFile = ps.file,
+                            outputDir = outputDir,
+                            outputName = outputName
+                        )
+                        isAnimated -> ConversionEngine.convertToWhatsAppAnimated(
+                            inputFile = ps.file,
+                            outputDir = outputDir,
+                            outputName = outputName,
+                            tempDir = tempDir
+                        )
+                        else -> ConversionEngine.convertToWhatsAppStatic(
+                            inputFile = ps.file,
+                            outputDir = outputDir,
+                            outputName = outputName
+                        )
+                    }
                 }
+
                 result.fold(
                     onSuccess = { file ->
                         validStickers.add(Sticker(
@@ -221,11 +260,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             if (validStickers.size < MIN_WHATSAPP_STICKERS) {
-                _phase.value = ImportPhase.Failed("Only ${validStickers.size} valid stickers were created. WhatsApp requires at least 3.")
+                _phase.value = ImportPhase.Failed("Only ${validStickers.size} valid stickers were created. WhatsApp requires at least $MIN_WHATSAPP_STICKERS.")
                 return@launch
             }
 
-            val trayResult = withContext(Dispatchers.Default) {
+            val trayResult = withContext(Dispatchers.IO) {
                 ConversionEngine.createTrayFromFile(File(validStickers.first().rawFilePath), outputDir)
             }
 
@@ -241,12 +280,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 trayImageFile = "tray.png",
                 stickers = validStickers.take(MAX_WHATSAPP_STICKERS),
                 imageDataVersion = System.currentTimeMillis().toString(),
-                animatedStickerPack = false
+                animatedStickerPack = hasAnimated  // tells WhatsApp this pack has animated stickers
             )
 
             packStorage.savePack(pack)
             _phase.value = ImportPhase.Done(packId)
             _previewStickers.value = emptyList()
+            previewStickerTypes = emptyMap()
             loadSavedPacks()
         }
     }
