@@ -5,13 +5,13 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.os.Build
 import android.util.Log
+import com.airbnb.lottie.LottieCompositionFactory
+import com.airbnb.lottie.LottieDrawable
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.GZIPInputStream
-import com.airbnb.lottie.LottieCompositionFactory
-import com.airbnb.lottie.LottieDrawable
 
 object ConversionEngine {
 
@@ -19,7 +19,7 @@ object ConversionEngine {
     private const val MAX_STATIC_STICKER_BYTES = 100 * 1024
     private const val MAX_ANIMATED_STICKER_BYTES = 500 * 1024
 
-    // ─── Static ──────────────────────────────────────────────────────────────
+    // ─── Static ───────────────────────────────────────────────────────────────
 
     fun convertToWhatsAppStatic(
         inputFile: File,
@@ -57,15 +57,6 @@ object ConversionEngine {
 
     // ─── Animated (.tgs → animated WebP) ─────────────────────────────────────
 
-    /**
-     * Converts a Telegram animated sticker (.tgs = gzipped Lottie JSON)
-     * to an animated WebP suitable for WhatsApp.
-     *
-     * Flow: .tgs → decompress → .json → FFmpeg (via lottie render workaround)
-     * Since FFmpeg can't render Lottie directly, we first decompress .tgs to
-     * a raw .json, render frames using LottieDrawable off-screen, save as
-     * a PNG sequence, then encode to animated WebP with FFmpeg.
-     */
     fun convertToWhatsAppAnimated(
         inputFile: File,
         outputDir: File,
@@ -73,14 +64,12 @@ object ConversionEngine {
         tempDir: File
     ): Result<File> {
         return try {
-            // Step 1: Decompress .tgs → .json
             val lottieJson = decompressTgs(inputFile)
                 ?: return Result.failure(Exception("Failed to decompress .tgs file"))
 
             val jsonFile = File(tempDir, "${inputFile.nameWithoutExtension}.json")
             jsonFile.writeText(lottieJson)
 
-            // Step 2: Render Lottie frames to PNG sequence
             val framesDir = File(tempDir, "frames_${inputFile.nameWithoutExtension}")
             framesDir.mkdirs()
 
@@ -89,11 +78,9 @@ object ConversionEngine {
                 return Result.failure(Exception("Failed to render Lottie frames"))
             }
 
-            // Step 3: Encode PNG sequence → animated WebP via FFmpeg
             val outFile = File(outputDir, outputName)
             val ffmpegResult = encodeFramesToAnimatedWebP(framesDir, outFile, frameCount)
 
-            // Cleanup temp frames
             framesDir.deleteRecursively()
             jsonFile.delete()
 
@@ -111,12 +98,6 @@ object ConversionEngine {
 
     // ─── Video (.webm → animated WebP) ───────────────────────────────────────
 
-    /**
-     * Converts a Telegram video sticker (.webm VP9)
-     * to an animated WebP suitable for WhatsApp.
-     *
-     * WhatsApp limits: 512x512, max 3 seconds, max 100 frames, max 500KB.
-     */
     fun convertToWhatsAppVideo(
         inputFile: File,
         outputDir: File,
@@ -125,23 +106,21 @@ object ConversionEngine {
         return try {
             val outFile = File(outputDir, outputName)
 
-            // FFmpeg: scale to 512x512, limit to 3s, 30fps max, encode as animated WebP
-            val cmd = buildString {
-                append("-y ")                                   // overwrite output
-                append("-t 3 ")                                 // max 3 seconds
-                append("-i \"${inputFile.absolutePath}\" ")
-                append("-vf \"scale=512:512:force_original_aspect_ratio=decrease,")
-                append("pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,")
-                append("fps=fps=30\" ")
-                append("-vcodec libwebp ")
-                append("-lossless 0 ")
-                append("-q:v 70 ")
-                append("-loop 0 ")                             // loop forever
-                append("-preset default ")
-                append("-an ")                                  // no audio
-                append("-vsync 0 ")
-                append("\"${outFile.absolutePath}\"")
-            }
+            // No quoted paths — FFmpeg Kit on Android is not a shell, quotes break path parsing
+            val cmd = "-y " +
+                    "-t 3 " +
+                    "-i ${inputFile.absolutePath} " +
+                    "-vf scale=512:512:force_original_aspect_ratio=decrease," +
+                    "pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000," +
+                    "fps=fps=30 " +
+                    "-vcodec libwebp " +
+                    "-lossless 0 " +
+                    "-q:v 70 " +
+                    "-loop 0 " +
+                    "-preset default " +
+                    "-an " +
+                    "-vsync 0 " +
+                    outFile.absolutePath
 
             Log.d(TAG, "FFmpeg video cmd: $cmd")
             val session = FFmpegKit.execute(cmd)
@@ -151,7 +130,6 @@ object ConversionEngine {
                 return Result.failure(Exception("FFmpeg video conversion failed"))
             }
 
-            // If output is still too large, re-encode with lower quality
             if (outFile.exists() && outFile.length() > MAX_ANIMATED_STICKER_BYTES) {
                 val reencoded = reencodeWithLowerQuality(outFile)
                 if (!reencoded) {
@@ -180,8 +158,10 @@ object ConversionEngine {
 
     fun createTrayFromFile(inputFile: File, outputDir: File): Result<File> {
         return try {
+            // For .tgs/.webm files BitmapFactory returns null — fall back to blank tray
             val bitmap = BitmapFactory.decodeFile(inputFile.absolutePath)
-                ?: return Result.failure(Exception("Cannot decode tray source"))
+                ?: Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888)
+
             val tray = Bitmap.createScaledBitmap(bitmap, 96, 96, true)
             val trayFile = File(outputDir, "tray.png")
             if (!tryWriteTrayPng(tray, trayFile)) {
@@ -244,9 +224,6 @@ object ConversionEngine {
         return false
     }
 
-    /**
-     * Decompresses a .tgs file (gzip) and returns Lottie JSON string.
-     */
     private fun decompressTgs(tgsFile: File): String? {
         return try {
             GZIPInputStream(tgsFile.inputStream()).bufferedReader().use { it.readText() }
@@ -256,27 +233,21 @@ object ConversionEngine {
         }
     }
 
-    /**
-     * Renders Lottie JSON frames to PNG files in framesDir.
-     * Uses LottieDrawable to draw each frame off-screen onto a Canvas.
-     * Returns the number of frames rendered.
-     */
     private fun renderLottieFrames(lottieJson: String, framesDir: File): Int {
         return try {
-            val result = com.airbnb.lottie.LottieCompositionFactory.fromJsonStringSync(lottieJson, null)
+            val result = LottieCompositionFactory.fromJsonStringSync(lottieJson, null)
             val composition = result.value ?: return 0
 
-            val drawable = com.airbnb.lottie.LottieDrawable().apply {
+            val drawable = LottieDrawable().apply {
                 setComposition(composition)
                 setBounds(0, 0, 512, 512)
             }
 
-            // WhatsApp cap: 100 frames max, 3 seconds max
             val totalFrames = composition.endFrame.toInt()
             val frameStep = if (totalFrames > 100) totalFrames / 100 else 1
             var frameCount = 0
-
             var frame = 0
+
             while (frame <= totalFrames && frameCount < 100) {
                 drawable.frame = frame
                 val bmp = Bitmap.createBitmap(512, 512, Bitmap.Config.ARGB_8888)
@@ -300,28 +271,22 @@ object ConversionEngine {
         }
     }
 
-    /**
-     * Encodes a PNG frame sequence into an animated WebP using FFmpeg.
-     */
     private fun encodeFramesToAnimatedWebP(
         framesDir: File,
         outFile: File,
         frameCount: Int
     ): Boolean {
-        // Default to 60fps total for smooth animation (Lottie is usually 60fps)
-        val cmd = buildString {
-            append("-y ")
-            append("-framerate 60 ")
-            append("-i \"${framesDir.absolutePath}/frame_%04d.png\" ")
-            append("-vcodec libwebp ")
-            append("-lossless 0 ")
-            append("-q:v 70 ")
-            append("-loop 0 ")
-            append("-preset default ")
-            append("-an ")
-            append("-vsync 0 ")
-            append("\"${outFile.absolutePath}\"")
-        }
+        val cmd = "-y " +
+                "-framerate 60 " +
+                "-i ${framesDir.absolutePath}/frame_%04d.png " +
+                "-vcodec libwebp " +
+                "-lossless 0 " +
+                "-q:v 70 " +
+                "-loop 0 " +
+                "-preset default " +
+                "-an " +
+                "-vsync 0 " +
+                outFile.absolutePath
 
         Log.d(TAG, "FFmpeg animated cmd: $cmd")
         val session = FFmpegKit.execute(cmd)
@@ -331,7 +296,6 @@ object ConversionEngine {
             return false
         }
 
-        // Re-encode at lower quality if too large
         if (outFile.exists() && outFile.length() > MAX_ANIMATED_STICKER_BYTES) {
             return reencodeWithLowerQuality(outFile)
         }
@@ -339,26 +303,22 @@ object ConversionEngine {
         return outFile.exists() && outFile.length() > 0
     }
 
-    /**
-     * Re-encodes an existing animated WebP at lower quality to meet the 500KB limit.
-     */
     private fun reencodeWithLowerQuality(file: File): Boolean {
         val tempFile = File(file.parent, "temp_${file.name}")
         file.copyTo(tempFile, overwrite = true)
 
         for (quality in listOf(50, 30, 10)) {
-            val cmd = buildString {
-                append("-y ")
-                append("-i \"${tempFile.absolutePath}\" ")
-                append("-vcodec libwebp ")
-                append("-lossless 0 ")
-                append("-q:v $quality ")
-                append("-loop 0 ")
-                append("-preset default ")
-                append("-an ")
-                append("-vsync 0 ")
-                append("\"${file.absolutePath}\"")
-            }
+            val cmd = "-y " +
+                    "-i ${tempFile.absolutePath} " +
+                    "-vcodec libwebp " +
+                    "-lossless 0 " +
+                    "-q:v $quality " +
+                    "-loop 0 " +
+                    "-preset default " +
+                    "-an " +
+                    "-vsync 0 " +
+                    file.absolutePath
+
             val session = FFmpegKit.execute(cmd)
             if (ReturnCode.isSuccess(session.returnCode) &&
                 file.exists() && file.length() in 1..MAX_ANIMATED_STICKER_BYTES

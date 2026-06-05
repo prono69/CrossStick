@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -92,7 +94,7 @@ fun PreviewScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "${stickers.size}/60 stickers selected. WhatsApp requires 3–60 static stickers.",
+                    text = "${stickers.size}/60 stickers selected. WhatsApp requires 3–60 stickers.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -154,6 +156,10 @@ private fun StickerPreviewCard(
     sticker: PreviewSticker,
     onRemove: () -> Unit
 ) {
+    // Detect animated/video stickers by file extension — Coil can't render these
+    val ext = sticker.file.extension.lowercase()
+    val isAnimatedOrVideo = ext == "tgs" || ext == "webm"
+
     Card(
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest),
@@ -165,15 +171,35 @@ private fun StickerPreviewCard(
                 .aspectRatio(1f)
                 .padding(8.dp)
         ) {
-            AsyncImage(
-                model = sticker.file,
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(MaterialTheme.colorScheme.surface)
-            )
+            if (isAnimatedOrVideo) {
+                // Show a placeholder with a play icon for animated/video stickers
+                // (Coil cannot render .tgs or .webm — they'll be converted on export)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(MaterialTheme.colorScheme.surface),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayCircle,
+                        contentDescription = "Animated sticker",
+                        modifier = Modifier.size(40.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            } else {
+                AsyncImage(
+                    model = sticker.file,
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                )
+            }
+
             IconButton(
                 onClick = onRemove,
                 modifier = Modifier.align(Alignment.TopEnd)
