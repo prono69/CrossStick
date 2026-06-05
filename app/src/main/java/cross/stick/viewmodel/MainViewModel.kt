@@ -29,7 +29,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
-private const val MAX_WHATSAPP_STICKERS = 60
+private const val MAX_WHATSAPP_STICKERS = 30
 private const val MIN_WHATSAPP_STICKERS = 3
 private const val TELEGRAM_CREATE_STICKER_PACK_ACTION = "org.telegram.messenger.CREATE_STICKER_PACK"
 private const val TELEGRAM_STICKER_EMOJIS_EXTRA = "STICKER_EMOJIS"
@@ -313,7 +313,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val names = mutableListOf<String>()
                 val col = c.getColumnIndexOrThrow("sticker_file_name")
                 while (c.moveToNext()) names += c.getString(col)
-                if (names.size !in 3..60) errors += "Sticker count must be 3..60, got ${names.size}"
+                if (names.size !in 3..30) errors += "Sticker count must be 3..30, got ${names.size}"
                 names.forEach { name ->
                     try {
                         resolver.openAssetFileDescriptor(Uri.parse("content://$authority/stickers_asset/$packId/$name"), "r")?.close()
